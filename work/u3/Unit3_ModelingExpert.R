@@ -44,6 +44,10 @@ tapply(predictTrain, qualityTrain$PoorCare, mean)
 #train = data[sp1,]
 #test = data[-sp1,]
 
+QualityLog1 = glm(PoorCare ~ StartedOnCombination + ProviderCount, 
+                  data = qualityTrain,
+                  family = binomial)
+summary(QualityLog1)
 
 # Video 5
 
