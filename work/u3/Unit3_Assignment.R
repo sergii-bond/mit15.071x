@@ -40,3 +40,70 @@ table(SongsTest$Top10)
 
 
 #Task 2
+
+parole = read.csv("parole.csv")
+parole$state = as.factor(parole$state)
+parole$crime = as.factor(parole$crime)
+
+set.seed(144)
+install.packages("caTools")
+library(caTools)
+split = sample.split(parole$violator, SplitRatio = 0.7)
+train = subset(parole, split == TRUE)
+test = subset(parole, split == FALSE)
+
+model1 = glm(violator ~ ., data=train, family='binomial')
+#Consider a parolee who is male, of white race, aged 50 years 
+#at prison release, from the state of Maryland, served 3 months, 
+#had a maximum sentence of 12 months, did not commit multiple offenses, 
+#and committed a larceny.
+#According to the model, what are the odds this individual is a violator?
+odds = exp(-4.24115+0.8867*1-0.0001756*50+0.3869*1-0.1238*3+0.08*12+0.6837*1)
+#According to the model, what is the probability this individual is a violator?
+p = odds/(1+odds)
+
+pred = predict(model1, newdata=test, type = "response")
+table(test$violator, pred > 0.5)
+12/(11+12)
+167/(167+12)
+(167+12)/(167+12+12+11)
+
+# Install and load ROCR package
+install.packages("ROCR")
+library(ROCR)
+
+# Prediction function
+ROCRpred = prediction(pred, test$violator)
+# Performance function
+ROCRperf = performance(ROCRpred, "tpr", "fpr")
+# Plot ROC curve
+plot(ROCRperf, colorize=TRUE, print.cutoffs.at=seq(0,1,by=0.1), text.adj=c(-0.2,1.7))
+
+as.numeric(performance(ROCRpred, "auc")@y.values)
+
+#Test3
+loans = read.csv("loans.csv")
+
+loans_na = subset(loans, is.na(pub.rec) | is.na(delinq.2yrs) | 
+                    is.na(inq.last.6mths) | is.na(revol.util) |
+                    is.na(days.with.cr.line) | is.na(log.annual.inc))
+
+install.packages("mice")
+library(mice)
+
+set.seed(144)
+vars.for.imputation = setdiff(names(loans), "not.fully.paid")
+imputed = complete(mice(loans[vars.for.imputation]))
+loans[vars.for.imputation] = imputed
+#Note that to do this imputation, we set vars.for.imputation to all 
+#variables in the data frame except for not.fully.paid, to impute the values 
+#using all of the other independent variables.
+
+loans = read.csv("loans_imputed.csv")
+
+set.seed(144)
+split = sample.split(loans$not.fully.paid, SplitRatio = 0.7)
+train = subset(loans, split == TRUE)
+test = subset(loans, split == FALSE)
+model1 = glm(not.fully.paid ~ ., data=train, family="binomial")
+predicted.risk = predict(model1, newdata=test, type="response")
