@@ -99,3 +99,107 @@ tapply(WHO$Over60, WHO$Region, mean)
 tapply(WHO$LiteracyRate, WHO$Region, min, na.rm=TRUE)
 
 tapply(WHO$ChildMortality, WHO$Region, mean)
+
+x = matrix(data = c(1, 2, 3, 4), nrow = 2, ncol = 2)
+x
+y = matrix(data = c(1, 2, 3, 4), nrow = 2, ncol = 2, byrow = T)
+y
+
+x = rnorm(5)
+x
+
+y = rnorm(5, mean = 1, sd = 2)
+y
+
+cor(x, y)
+
+x = rnorm(1000, mean = 3, sd = 2)
+E_X_est = mean(x)
+VAR_X_est = mean((x - E_X_est)^2)
+hist(x)
+
+x = rnorm(100)
+y = rnorm(100)
+plot(x, y, xlab = "X", ylab = "Y")
+
+# plot to file
+pdf("fig.pdf")
+plot(x, y, col = "green")
+dev.off()
+
+jpeg("fig.jpeg")
+hist(x)
+dev.off()
+
+#equaly spaced points
+x = seq(-pi, pi, length = 50)
+
+#countour plot
+y = x
+# outer product of arrays, creates a matrix
+f = outer(x, y, function(x,y) cos(y) / (1 + x^2))
+contour(x, y, f)
+# 'add' - if true, add to current plot
+contour(x, y, f, nlevels = 45, add = T)
+# t() - matrix transpose
+fa = (f - t(f)) / 2
+contour(x, y, fa, nlevels = 45)
+
+# heatmap
+image(x, y, fa)
+
+# 3D plot
+persp(x, y, fa)
+persp(x, y, fa, theta = 30)
+persp(x, y, fa, theta = 30, phi = 20)
+persp(x, y, fa, theta = 30, phi = 70)
+persp(x, y, fa, theta = 30, phi = 40)
+
+A = matrix(1:16, 4, 4)
+A[2, 3]
+A[c(1, 3), c(2, 4)]
+A[1:3, 2:4]
+A[1:2, ]
+A[ , 1:2]
+A[1, ]
+#exclude rows
+A[-c(1, 3), ]
+dim(A)
+
+b = read.csv("test.csv")
+fix(b)
+
+# remove empty rows
+b = na.omit(b)
+fix(b)
+
+# see column names
+names(b)
+
+# let colum names be available in the current namespace
+attach(b)
+plot(col1, col2)
+
+# convert a variables from quantitative into qualitative 
+col1 = as.factor(col1)
+
+plot(col1, col2)
+
+# scatterplot matrix
+pairs(b)
+pairs(~ col1 + col2 + col3, b)
+
+# identify the value of a point in the plot
+plot(col2, col3)
+identify(col2, col3, col1)
+
+x = rnorm(10)
+y = rnorm(10)
+plot(x, y)
+identify(x, y, x)
+
+# savehistory()
+# loadhistory()
+
+wd = getwd()
+setwd(paste(wd, "/stat", sep = ""))
