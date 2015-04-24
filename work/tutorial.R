@@ -203,3 +203,27 @@ identify(x, y, x)
 
 wd = getwd()
 setwd(paste(wd, "/stat", sep = ""))
+
+college = read.csv("College.csv")
+fix(college)
+# create a column "row.names", not treated as data to perform calculations
+rownames(college) = college[, 1]
+fix(college)
+# remove the column
+college$X = NULL
+fix(college)
+pairs(college[, 1:10], college)
+boxplot(Outstate ~ Private, data = college)
+
+#replicate the value n times
+Elite = rep("No", nrow(college))
+Elite[college$Top10perc > 50] = "Yes"
+college$Elite = Elite
+boxplot(Outstate ~ Elite, data = college)
+
+#divide the screen into 4 parts
+par(mfrow = c(2,2))
+hist(college$Outstate)
+hist(college$Enroll)
+hist(college$PhD)
+hist(college$Terminal)
