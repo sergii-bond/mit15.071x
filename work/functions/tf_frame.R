@@ -1,5 +1,5 @@
 
-tf_frame <- function(text_vector) {
+tf_frame <- function(text_vector, term_sparse_factor) {
     
   library(tm)
   library(SnowballC)
@@ -45,10 +45,11 @@ tf_frame <- function(text_vector) {
   # Remove sparse terms
   # Keep only those terms that exist in 0.5% of the tweets
   #sparse = removeSparseTerms(frequencies, 0.995)
+  sparse = removeSparseTerms(frequencies, term_sparse_factor)
   #sparse
   
   # Convert to a data frame
-  sparse_frame = as.data.frame(as.matrix(frequencies))
+  sparse_frame = as.data.frame(as.matrix(sparse))
   
   # Make all variable names R-friendly
   colnames(sparse_frame) = make.names(colnames(sparse_frame))
