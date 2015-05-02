@@ -35,17 +35,18 @@ NewsTrain = read.csv("NYTimesBlogTrain.csv", stringsAsFactors=FALSE)
 
 NewsValid = read.csv("NYTimesBlogTest.csv", stringsAsFactors=FALSE)
 
-install.packages("ggplot2")
-library(ggplot2)
+#install.packages("ggplot2")
+#library(ggplot2)
 
-scatterplot = ggplot(NewsTrain, aes(x = WordCount, y = Popular))
-scatterplot + geom_point()
-boxplot(NewsTrain$Popular, NewsTrain$WordCount)
-pop = subset(NewsTrain, Popular == 1)
-non_pop = subset(NewsTrain, Popular == 0)
-summary(pop$WordCount)
-summary(non_pop$WordCount)
+#scatterplot = ggplot(NewsTrain, aes(x = WordCount, y = Popular))
+#scatterplot + geom_point()
+#boxplot(NewsTrain$Popular, NewsTrain$WordCount)
+#pop = subset(NewsTrain, Popular == 1)
+#non_pop = subset(NewsTrain, Popular == 0)
+#summary(pop$WordCount)
+#summary(non_pop$WordCount)
 
+# Transform input data
 df_list <- list(train = NewsTrain, valid = NewsValid)
 df_list <- lapply(df_list, function(df) {
   df$NewsDesk = as.factor(df$NewsDesk)  
@@ -53,11 +54,102 @@ df_list <- lapply(df_list, function(df) {
   df$SubsectionName = as.factor(df$SubsectionName)  
   df$PubDate = strptime(df$PubDate, "%Y-%m-%d %H:%M:%S")
   df$Weekday = df$PubDate$wday
+  df$Month = df$PubDate$mon
+  df$Hour = df$PubDate$hour
   rownames(df) = df$UniqueID
+  df$PubDate = NULL 
+  #df$Popular = as.factor(df$Popular)
   df
 })
 
+#Split by month. September and October - train, November - test
+split = (df_list$train$Month == 8 | df_list$train$Month == 9)
+train = subset(df_list$train, split == TRUE)
+test = subset(df_list$train, split == FALSE)
+valid = df_list$valid
 
+# Quick predictions
+factor_vars = c("NewsDesk", "SectionName", "SubsectionName")
+qp <- data.frame()
+
+# set without rows, where we can predict quickly
+train_cut = train
+
+for (var in factor_vars) {
+  cat("Var:", var, '\n')
+  #qp = rbind(qp, quickly_predict(train_cut$UniqueID, train_cut[[var]], train_cut$Popular, 1))
+  qp = quickly_predict(train_cut$UniqueID, train_cut[[var]], train_cut$Popular, 1)
+  train_cut = subset(train_cut, UniqueID %in% setdiff(train_cut$UniqueID, rownames(qp)))
+}
+
+#construct a data frame with variables and their factors that we will exclude from test/valid set
+exc_lev_df <- data.frame()
+for (var in factor_vars) {
+  train_cut[[var]] = factor(train_cut[[var]])
+  exc_lev_df = rbind(exc_lev_df, data.frame(var = var, 
+                                            lev = setdiff(levels(train[[var]]), levels(train_cut[[var]]))))
+}
+
+# construct test/valid sets without rows, where we can predict quickly
+test_cut = test
+valid_cut = valid
+
+for (i in levels(exc_lev_df$var)) {
+  var_i = subset(exc_lev_df, var == i)  
+  
+  for (j in levels(var_i$lev)) {
+    test_cut = subset(test_cut, test_cut[[i]] != j)
+    valid_cut = subset(valid_cut, valid_cut[[i]] != j)
+  }
+}
+
+# need to readjust number of factors
+for (var in factor_vars) {
+  test_cut[[var]] = factor(test_cut[[var]])
+  valid_cut[[var]] = factor(valid_cut[[var]])
+}
+  
+# construct a data frame with quick predictions (0)
+test_quick_pred = data.frame(UniqueID = setdiff(test$UniqueID, test_cut$UniqueID))
+valid_quick_pred = data.frame(UniqueID = setdiff(valid$UniqueID, valid_cut$UniqueID))
+
+test_quick_pred$Probability1 = rep(0, nrow(test_quick_pred)) 
+test_quick_pred$Popular = subset(test, UniqueID %in% intersect(test$UniqueID, test_quick_pred$UniqueID))$Popular
+valid_quick_pred$Probability1 = rep(0, nrow(valid_quick_pred)) 
+
+# Play with text
+tf = tf_frame(c(paste(train_cut$Headline, train_cut$Abstract, sep = " "), 
+                paste(test_cut$Headline, test_cut$Abstract, sep = " "), 
+                paste(valid_cut$Headline, valid_cut$Abstract, sep = " ")), 
+              0.995)
+#train_tf = tf_frame(paste(train_cut$Headline, train_cut$Abstract, sep = " "), 0.995)
+#test_tf = tf_frame(paste(test_cut$Headline, test_cut$Abstract, sep = " "), 0.995)
+#rownames(train_tf) = rownames(train_cut)
+row.names(tf) = c(train_cut$UniqueID, test_cut$UniqueID, valid_cut$UniqueID)
+
+# Perform modeling on a train_cut and test on test_cut frames
+train_cut_1 = cbind(train_cut, subset(tf, row.names(tf) %in% train_cut$UniqueID))
+train_cut_1$Popular = as.factor(train_cut$Popular)
+#x = randomForest(Popular~ WordCount + Weekday + NewsDesk + SectionName +  SubsectionName + Hour, 
+x = randomForest(Popular~ . - UniqueID - Headline - Snippet - Abstract, 
+                                data = train_cut_1, nodesize = 5, ntree = 1000) 
+
+test_cut_1 = cbind(test_cut, subset(tf, row.names(tf) %in% test_cut$UniqueID))
+p = predict(x, newdata = test_cut_1, type="prob")
+
+mdf = data.frame(UniqueID = test_cut_1$UniqueID, Probability1 = p[,2], Popular = test_cut_1$Popular)
+fdf = rbind(mdf, test_quick_pred)
+fdf = fdf[order(fdf$UniqueID), ]
+access_accuracy(fdf$Popular,  fdf$Probability1 > 0.5, fdf$Probability1)
+
+valid_cut_1 = cbind(valid_cut, subset(tf, row.names(tf) %in% valid_cut$UniqueID))
+p_valid = predict(x, newdata = valid_cut_1, type="prob")
+
+mdf_valid = data.frame(UniqueID = valid_cut_1$UniqueID, Probability1 = p_valid[,2])
+fdf_valid = rbind(mdf_valid, valid_quick_pred)
+fdf_valid = fdf_valid[order(fdf_valid$UniqueID), ]
+MySubmission = data.frame(UniqueID = fdf_valid$UniqueID, Probability1 = fdf_valid$Probability1)
+write.csv(MySubmission, "Submission_Sergius_050215.csv", row.names=FALSE)
 
 # We will just create a simple logistic regression model, to predict Popular using WordCount:
 
@@ -106,19 +198,90 @@ df_list <- lapply(df_list, function(df) {
 # Weekday could now be used as an independent variable in your predictive models.
 
 # For more fields that you can extract from a date/time object in R, see the help page ?POSIXlt
+#  library(tm)
+#  library(SnowballC)
 
+#corpus = Corpus(VectorSource(df_list$train$Abstract))
+#corpus = Corpus(VectorSource(df_list$train$Headline))
+  #corpus = tm_map(corpus, tolower)
+  #corpus = tm_map(corpus, PlainTextDocument)
+  #corpus = tm_map(corpus, removePunctuation)
+  #corpus = tm_map(corpus, removeWords, stopwords("english"))
+  #corpus = tm_map(corpus, stemDocument)
+  #tf = DocumentTermMatrix(corpus, control = list(
+  #  weighting = function(x)
+  #    weightTf(x)))
+
+  #tf_idf = DocumentTermMatrix(corpus, control = list(
+  #  weighting = function(x)
+  #    weightTfIdf(x, normalize = FALSE)))
+
+  #frequencies = DocumentTermMatrix(corpus, control = list(
+  #  weighting = function(x)
+      #weightSMART(x, spec = "ntn")))
+  #    weightSMART(x, spec = "ltn")))
+
+  #frequencies = DocumentTermMatrix(corpus)
+  #very very slow, takes a lot of memory (600 MB)
+  #idf = as.matrix(tf_idf) / as.matrix(tf)
+
+  #sparse = removeSparseTerms(frequencies, 0.995)
+  #term_score_matrix = as.data.frame(as.matrix(sparse))
+  #colnames(term_score_matrix) = make.names(colnames(term_score_matrix))
+  
+#tf = term_score_matrix 
 #tf = tf_frame(c(df_list$train$Abstract, df_list$train$Snippet), 0.995)
-tf = tf_frame(df_list$train$Abstract, 0.995)
-#tf = tf_frame(df_list$train$Snippet, 0.995)
-rownames(tf) = rownames(df_list$train)
+#tf = tf_frame(df_list$train$Abstract, 0.995)
+#tf = tf_frame(df_list$train$Abstract, 0.95)
+tf = tf_frame(paste(df_list$train$Headline, df_list$train$Abstract, sep = " "), 0.995)
+tf_valid = tf_frame(df_list$valid$Headline, 0.995)
 
-library(caTools)
+rownames(tf) = rownames(df_list$train)
+rownames(tf_valid) = rownames(df_list$valid)
+#tail(sort(colMeans(tf)))
+
+#library(caTools)
 #set.seed(123)
-split = sample.split(df_list$train$Popular, SplitRatio = 0.7)
+#split = sample.split(df_list$train$Popular, SplitRatio = 0.7)
+news_tf_train = cbind(tf, data.frame(WordCount = df_list$train$WordCount, 
+                                     NewsDesk = df_list$train$NewsDesk, 
+                                     SectionName = df_list$train$SectionName,
+                                     SubsectionName = df_list$train$SubsectionName, 
+                                     Weekday = df_list$train$Weekday,
+                                     Month = df_list$train$Month,
+                                     Hour = df_list$train$Hour,
+                                     Popular = df_list$train$Popular))
+
+news_tf_train$Popular = as.factor(news_tf_train$Popular)
+
+#No 'Popular' here
+news_tf_valid = cbind(tf_valid, data.frame(WordCount = df_list$valid$WordCount, 
+                                     NewsDesk = df_list$valid$NewsDesk, 
+                                     SectionName = df_list$valid$SectionName,
+                                     SubsectionName = df_list$valid$SubsectionName, 
+                                     Hour = df_list$valid$Hour,
+                                     Weekday = df_list$valid$Weekday))
+
+news_tf_valid$SectionName <- factor(news_tf_valid$SectionName,
+                                    levels = c(levels(news_tf_valid$SectionName),
+                                               "Sports", "Style"))
+                                               #"Fashion & Style", "Politics"))
+
+news_tf_valid$SubsectionName <- factor(news_tf_valid$SubsectionName,
+                                    levels = c(levels(news_tf_valid$SubsectionName),
+                                               "Fashion & Style", "Politics"))
+
+news_tf_valid$NewsDesk <- factor(news_tf_valid$NewsDesk,
+                                    levels = c(levels(news_tf_valid$NewsDesk),
+                                               "National", "Sports"))
+
+#news_train = subset(df_list$train, split == TRUE)
+#news_test = subset(df_list$train, split == FALSE)
+news_train = subset(news_tf_train, split == TRUE)
+news_test = subset(news_tf_train, split == FALSE)
+
 tf_train = subset(tf, split == TRUE)
 tf_test = subset(tf, split == FALSE)
-news_train = subset(df_list$train, split == TRUE)
-news_test = subset(df_list$train, split == FALSE)
 
 library(flexclust)
 k = 5
@@ -153,9 +316,9 @@ clusterTest = predict(km.kcca, newdata=tf_test)
 news_train_cl = split_df_by_clusters(news_train, clusterTrain)
 news_test_cl = split_df_by_clusters(news_test, clusterTest)
 
-#for (i in 1:length(tf_train_cl)) {
-#  cat(i, ":", nrow(tf_train_cl[[i]]), "\n")
-#  print(tail(sort(colMeans(tf_train_cl[[i]]))))
+#for (i in 1:length(news_train_cl)) {
+  #cat(i, ":", nrow(news_train_cl[[i]]), "\n")
+  #print(tail(sort(colMeans(news_train_cl[[i]]))))
 #}
 
 #lapply(tf_cl_kmeans,nrow)
@@ -167,51 +330,60 @@ news_test_cl = split_df_by_clusters(news_test, clusterTest)
 library(rpart)
 library(rpart.plot)
 library(randomForest)
-install.packages("lme4")
-install.packages("caret")
+#install.packages("lme4")
+#install.packages("caret")
 library(caret)
-install.packages("e1071")
+#install.packages("e1071")
 library(e1071)
 
 # Define cross-validation experiment
 numFolds = trainControl(method = "cv", number = 10 )
-cpGrid = expand.grid(.cp = seq(0.001,0.05,0.001)) 
+cpGrid = expand.grid(.cp = seq(0.001,0.3,0.001)) 
 
 # Perform the cross validation
 
 newsModel <- list()
 
 for (i in 1:k) {
-  best = train(Popular~ WordCount + Weekday + NewsDesk + SectionName +  SubsectionName, 
-               data = news_train_cl[[i]], method = "rpart", 
-               trControl = numFolds, tuneGrid = cpGrid)
-  #newsModel[[i]] = glm(Popular~ ., data = news_train_cl[[i]], family = "binomial") 
+  #best = train(Popular~ WordCount + Weekday + NewsDesk + SectionName +  SubsectionName, 
+  #             data = news_train_cl[[i]], method = "rpart", 
+  #             trControl = numFolds, tuneGrid = cpGrid)
   news_train_cl[[i]]$Popular = as.factor(news_train_cl[[i]]$Popular)
-  #newsModel[[i]] = rpart(Popular~ ., data = news_train_cl[[i]], method = "class") 
-  newsModel[[i]] = rpart(Popular~ WordCount + Weekday + NewsDesk + SectionName + 
-                           SubsectionName, 
-                         data = news_train_cl[[i]], method = "class", cp = best$bestTune[[1]]) 
-  #newsModel[[i]] = randomForest(Popular~ ., data = news_train_cl[[i]]) 
+  ###newsModel[[i]] = glm(Popular~ WordCount + Weekday + NewsDesk + SectionName +  SubsectionName, 
+  ###                     data = news_train_cl[[i]],  family = "binomial") 
+  ##newsModel[[i]] = rpart(Popular~ WordCount + Weekday + NewsDesk + SectionName +  SubsectionName,
+  ##                       data = news_train_cl[[i]], method = "class", cp = best$bestTune[[1]]) 
+  ####newsModel[[i]] = randomForest(Popular~ WordCount + Weekday + NewsDesk + SectionName +  SubsectionName, 
+  #newsModel[[i]] = randomForest(Popular~ .-WordCount-Weekday-NewsDesk-SectionName-SubsectionName, 
+  newsModel[[i]] = randomForest(Popular~ .,
+                                data = news_train_cl[[i]], nodesize = 5, ntree = 1000) 
   
 }
   
 newsModel_predict_test <-list()
 newsModel_predict_test_class <-list()
-combined <- data.frame(UniqueID = c(), Probability1 = c())
+#combined <- data.frame(UniqueID = c(), Probability1 = c())
+combined <- data.frame()
 
 for (i in 1:k) {
   #newsModel_predict_test[[i]] = predict(newsModel[[i]], newdata = news_test_cl[[i]], type = "response")
   newsModel_predict_test_class[[i]] = predict(newsModel[[i]], newdata = news_test_cl[[i]], 
                                               type = "class")
-  newsModel_predict_test[[i]] = predict(newsModel[[i]], newdata = news_test_cl[[i]])
+  ###                                            type = "response")
+  ##newsModel_predict_test[[i]] = predict(newsModel[[i]], newdata = news_test_cl[[i]])
+  newsModel_predict_test[[i]] = predict(newsModel[[i]], newdata = news_test_cl[[i]], type="prob")
   
   combined = rbind(combined, 
                    data.frame(UniqueID = as.numeric(as.character(rownames(newsModel_predict_test[[i]]))),
                               Probability1 = newsModel_predict_test[[i]][,2]))
-  #x = as.matrix(table(news_test_cl[[i]]$Popular, newsModel_predict_test[[i]] > 0.5))
+  
   acc = access_accuracy(news_test_cl[[i]]$Popular, 
                         newsModel_predict_test_class[[i]],
                         newsModel_predict_test[[i]][,2])
+                        ###newsModel_predict_test[[i]])
+  ###acc = access_accuracy(news_test_cl[[i]]$Popular, 
+  ###                      newsModel_predict_test_class[[i]] > 0.5,
+  ###                      newsModel_predict_test_class[[i]])
                         #newsModel_predict_test[[i]])
   cat("Cluster ", i, ": baseline accuracy =", acc[1], ", test accuracy =", acc[2], "AUC =", acc[3], "\n")
 }
@@ -224,3 +396,26 @@ acc = access_accuracy(news_test$Popular,
                       combined$Probability1)
 cat("Overall: baseline accuracy =", acc[1], ", test accuracy =", acc[2], "AUC =", acc[3], "\n")
 #prp(tweetCART)
+
+#news_train_1 = news_train
+#news_train_1$Popular = as.factor(news_train_1$Popular)
+#news_test_1 = news_test
+#news_test_1$Popular = as.factor(news_test_1$Popular)
+
+#without any clustering!!!
+x = randomForest(Popular~ WordCount + Weekday + NewsDesk + SectionName +  SubsectionName + Hour, 
+                                data = news_train, nodesize = 5, ntree = 1000) 
+p = predict(x, newdata = news_test, type="prob")
+data.frame(News)
+access_accuracy(news_test$Popular,  p[,2] > 0.5, p[,2])
+
+#Run model on the complete training set
+#Test it on a validation set
+
+full_train_model = randomForest(Popular~ WordCount + Weekday + NewsDesk + SectionName +  SubsectionName + Hour, 
+                                data = news_tf_train, nodesize = 5, ntree = 1000) 
+valid_prop = predict(full_train_model, newdata = news_tf_valid, type="prob")
+#out_data = data.frame(UniqueID = df_list$valid$UniqueID,
+#           Probability1 = valid_prop[,2])
+MySubmission = data.frame(UniqueID = NewsValid$UniqueID, Probability1 = valid_prop[,2])
+write.csv(MySubmission, "Submission_Sergius.csv", row.names=FALSE)
