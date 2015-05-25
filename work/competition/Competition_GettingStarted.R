@@ -35,6 +35,12 @@ NewsTrain = read.csv("NYTimesBlogTrain.csv", stringsAsFactors=FALSE)
 
 NewsValid = read.csv("NYTimesBlogTest.csv", stringsAsFactors=FALSE)
 
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(flexclust) 
+library("caret")
+
 #install.packages("ggplot2")
 #library(ggplot2)
 
@@ -45,6 +51,9 @@ NewsValid = read.csv("NYTimesBlogTest.csv", stringsAsFactors=FALSE)
 #non_pop = subset(NewsTrain, Popular == 0)
 #summary(pop$WordCount)
 #summary(non_pop$WordCount)
+install.packages("babynames")
+library("babynames")
+
 
 # Transform input data
 df_list <- list(train = NewsTrain, valid = NewsValid)
@@ -56,17 +65,35 @@ df_list <- lapply(df_list, function(df) {
   df$Weekday = df$PubDate$wday
   df$Month = df$PubDate$mon
   df$Hour = df$PubDate$hour
+  df$HeadlineLength = nchar(df$Headline)
+  df$AbstractLength = nchar(df$Abstract)
   rownames(df) = df$UniqueID
   df$PubDate = NULL 
   #df$Popular = as.factor(df$Popular)
   df
 })
 
+#names = babynames
+names = subset(babynames, n > 1000)
+
+df_list$train$HasName = rep(FALSE, nrow(df_list$train))
+for (i in names$name) {
+  df_list$train$HasName = df_list$train$HasName | grepl(i, df_list$train$Headline, ignore.case = TRUE)
+}
+
+
+money = c("dollar", "money", "wage", "salary", "euro", "bank", "million", "trillion")
+df_list$train$Money = rep(FALSE, nrow(df_list$train))
+for (i in money) {
+  df_list$train$Money = df_list$train$Money | grepl(i, df_list$train$Headline, ignore.case = TRUE)
+}
+
 #Split by month. September and October - train, November - test
 split = (df_list$train$Month == 8 | df_list$train$Month == 9)
 train = subset(df_list$train, split == TRUE)
 test = subset(df_list$train, split == FALSE)
 valid = df_list$valid
+
 
 # Quick predictions
 factor_vars = c("NewsDesk", "SectionName", "SubsectionName")
@@ -110,46 +137,380 @@ for (var in factor_vars) {
 }
   
 # construct a data frame with quick predictions (0)
+train_quick_pred = data.frame(UniqueID = setdiff(train$UniqueID, train_cut$UniqueID))
 test_quick_pred = data.frame(UniqueID = setdiff(test$UniqueID, test_cut$UniqueID))
 valid_quick_pred = data.frame(UniqueID = setdiff(valid$UniqueID, valid_cut$UniqueID))
 
 test_quick_pred$Probability1 = rep(0, nrow(test_quick_pred)) 
 test_quick_pred$Popular = subset(test, UniqueID %in% intersect(test$UniqueID, test_quick_pred$UniqueID))$Popular
+
+train_quick_pred$Probability1 = rep(0, nrow(train_quick_pred)) 
+train_quick_pred$Popular = subset(train, UniqueID %in% intersect(train$UniqueID, train_quick_pred$UniqueID))$Popular
+
 valid_quick_pred$Probability1 = rep(0, nrow(valid_quick_pred)) 
 
 # Play with text
-tf = tf_frame(c(paste(train_cut$Headline, train_cut$Abstract, sep = " "), 
-                paste(test_cut$Headline, test_cut$Abstract, sep = " "), 
-                paste(valid_cut$Headline, valid_cut$Abstract, sep = " ")), 
-              0.995)
-#train_tf = tf_frame(paste(train_cut$Headline, train_cut$Abstract, sep = " "), 0.995)
-#test_tf = tf_frame(paste(test_cut$Headline, test_cut$Abstract, sep = " "), 0.995)
-#rownames(train_tf) = rownames(train_cut)
+#tf = tf_frame(c(paste(train_cut$Headline, sep = " "), 
+#                paste(test_cut$Headline, sep = " "), 
+#                paste(valid_cut$Headline, sep = " ")), 
+#                0.998)
+#r = 4
+#tf = tf_frame(c(paste(sapply(train_cut$Headline, function(x) paste(x,x,x,x, sep = " ")), train_cut$Abstract, sep = " "), 
+#                paste(sapply(test_cut$Headline, function(x) paste(x,x,x,x, sep = " ")), test_cut$Abstract, sep = " "), 
+#                paste(sapply(valid_cut$Headline, function(x) paste(x,x,x,x, sep = " ")), valid_cut$Abstract, sep = " ")), 
+              #1)
+#              0.995)
+tf = tf_frame(c(paste(sapply(train_cut$Headline, function(x) paste(x,x, sep = " ")), train_cut$Abstract, sep = " "), 
+                paste(sapply(test_cut$Headline, function(x) paste(x,x, sep = " ")), test_cut$Abstract, sep = " "), 
+                paste(sapply(valid_cut$Headline, function(x) paste(x,x, sep = " ")), valid_cut$Abstract, sep = " ")), 
+              #1)
+              0.998)
+
 row.names(tf) = c(train_cut$UniqueID, test_cut$UniqueID, valid_cut$UniqueID)
 
-# Perform modeling on a train_cut and test on test_cut frames
-train_cut_1 = cbind(train_cut, subset(tf, row.names(tf) %in% train_cut$UniqueID))
-train_cut_1$Popular = as.factor(train_cut$Popular)
-#x = randomForest(Popular~ WordCount + Weekday + NewsDesk + SectionName +  SubsectionName + Hour, 
-x = randomForest(Popular~ . - UniqueID - Headline - Snippet - Abstract, 
-                                data = train_cut_1, nodesize = 5, ntree = 1000) 
+train_cut_op = train_cut
+test_cut_op = test_cut
+valid_cut_op = valid_cut
 
-test_cut_1 = cbind(test_cut, subset(tf, row.names(tf) %in% test_cut$UniqueID))
-p = predict(x, newdata = test_cut_1, type="prob")
 
-mdf = data.frame(UniqueID = test_cut_1$UniqueID, Probability1 = p[,2], Popular = test_cut_1$Popular)
-fdf = rbind(mdf, test_quick_pred)
-fdf = fdf[order(fdf$UniqueID), ]
-access_accuracy(fdf$Popular,  fdf$Probability1 > 0.5, fdf$Probability1)
+lev = "Opinion"
+for (lev in levels(train_cut$SectionName)) {
+  cat("SectionName: ", lev, "\n")
+  #train_cut_op = subset(train_cut, SectionName == "Opinion")
+  #test_cut_op = subset(test_cut, SectionName == "Opinion")
+  train_cut_op = subset(train_cut, SectionName == lev)
+  test_cut_op = subset(test_cut, SectionName == lev)
+  valid_cut_op = subset(valid_cut, SectionName == lev) 
+  
+  ##tf_op = tf_frame(c(paste(sapply(train_cut_op$Headline, function(x) paste(x,x,x,x, sep = " ")), train_cut_op$Abstract, sep = " "), 
+  ##                paste(sapply(test_cut_op$Headline, function(x) paste(x,x,x,x, sep = " ")), test_cut_op$Abstract, sep = " "), 
+  ##                paste(sapply(valid_cut_op$Headline, function(x) paste(x,x,x,x, sep = " ")), valid_cut_op$Abstract, sep = " ")), 
+                #1)
+  ##              0.995)
+  ##row.names(tf_op) = c(train_cut_op$UniqueID, test_cut_op$UniqueID, valid_cut_op$UniqueID)
+  
+  ##tf_train_op = subset(tf_op, row.names(tf_op) %in% train_cut_op$UniqueID)
+  ##tf_test_op = subset(tf_op, row.names(tf_op) %in% test_cut_op$UniqueID)
+  
+  tf_train_op = subset(tf, row.names(tf) %in% train_cut_op$UniqueID)
+  tf_test_op = subset(tf, row.names(tf) %in% test_cut_op$UniqueID)
+  #train_tf = tf_frame(paste(train_cut$Headline, train_cut$Abstract, sep = " "), 0.995)
+  #test_tf = tf_frame(paste(test_cut$Headline, test_cut$Abstract, sep = " "), 0.995)
+  #rownames(train_tf) = rownames(train_cut)
+  
+  
+  # Perform modeling on a train_cut and test on test_cut frames
+  #train_cut_1 = cbind(train_cut, subset(tf, row.names(tf) %in% train_cut$UniqueID))
+  ##train_cut_1 = cbind(train_cut_1, subset(tf_op, row.names(tf_op) %in% train_cut_1$UniqueID))
+  train_tf_cut_op = cbind(data.frame(WordCount = train_cut_op$WordCount,
+                                 Hour = train_cut_op$Hour,
+                                 HeadlineLength = train_cut_op$HeadlineLength,
+                                 HasName = train_cut_op$HasName,
+                                 Money = train_cut_op$Money,
+                                 #AbstractLength = train_cut_op$AbstractLength,
+                                 Weekday = train_cut_op$Weekday))
+                                 #subset(tf, row.names(tf) %in% train_cut_op$UniqueID))
+  
+  test_tf_cut_op = cbind(data.frame(WordCount = test_cut_op$WordCount,
+                                 Hour = test_cut_op$Hour,
+                                 HeadlineLength = test_cut_op$HeadlineLength,
+                                 HasName = test_cut_op$HasName,
+                                 Money = test_cut_op$Money,
+                                 #AbstractLength = test_cut_op$AbstractLength,
+                                 Weekday = test_cut_op$Weekday))
+                                 #subset(tf, row.names(tf) %in% test_cut_op$UniqueID))
+                                 #subset(tf_op, row.names(tf_op) %in% test_cut_op$UniqueID))
+  
+  
+  # Normalization
+  #preproc = preProcess(train_tf_cut_op)
+  #train_tf_cut_op = predict(preproc, train_tf_cut_op)
+  
+  #preproc = preProcess(test_tf_cut_op)
+  #test_tf_cut_op = predict(preproc, test_tf_cut_op)
+  
+  #train_cut_op_norm$Popular = train_cut_1$Popular
+  #train_cut_1 = train_cut_op_norm 
+  
+  #train_cut_1 = train_cut
+  #train_cut_1 = subset(train_cut_1, SectionName == "Opinion")
+  #x = subset(train_cut_1, SectionName == "" & NewsDesk == "Foreign")
+  #y = subset(train_cut_1, SectionName == "World" & NewsDesk == "Foreign")
+  #mean(as.numeric(x$Popular))
+  #mean(as.numeric(y$Popular))
+  #x = subset(train_cut_1, SectionName == "Opinion" & NewsDesk != "OpEd")
+  #train_cut_1[train_cut_1$UniqueID %in% x$UniqueID, ]$NewsDesk = "OpEd"
+  
+  #test_cut_1 = cbind(test_cut, subset(tf, row.names(tf) %in% test_cut$UniqueID))
+  #test_cut_1 = cbind(test_cut_1, subset(tf_op, row.names(tf_op) %in% test_cut_1$UniqueID))
+  #test_cut_1 = test_cut
+  #test_cut_1 = subset(test_cut_1, SectionName == "Opinion")
+  #y = subset(test_cut_1, SectionName == "Opinion" & NewsDesk != "OpEd")
+  #test_cut_1[test_cut_1$UniqueID %in% y$UniqueID, ]$NewsDesk = "OpEd"
+  
+  preproc = preProcess(tf_train_op)
+  tf_train_op = predict(preproc, tf_train_op)
+  tf_train_op$Opinion = as.numeric(train_cut$SectionName == "Opinion")
+    
+  k = 10 
+  #tf_kmeans = kmeans(tf_train_op, centers = k)#, iter.max = 1000)
+  #tf_train_op$NewsDesk = train_cut_1$NewsDesk
+  #km.kcca = kcca(tf_train_op, k, family = kccaFamily("ejaccard"), 
+  km.kcca = kcca(tf_train_op, k, family = kccaFamily("angle")) 
+  #km.kcca = kcca(tf_train_op, k,
+  ##km.kcca = kcca(train_cut_1, k, family = kccaFamily("ejaccard"), 
+  #     control = list(initcent = "kmeanspp"))
+  # predict clusters on test data
+  km.kcca = as.kcca(tf_kmeans, tf_train_op)
+  #returns a vector of cluster numbers
+  clusterTrain = predict(km.kcca)
+  ##clusterTest = predict(km.kcca, newdata=tf_test_op)
+  table(clusterTrain, train_cut_op$Popular)
+  
+  train_cut_cl = train_cut
+  train_cut_cl$Cluster = clusterTrain 
+  false_pos_train = subset(train_cut_cl, mdf_train$Probability1 > 0.8 & Popular == 0)
+  false_neg_train = subset(train_cut_cl, mdf_train$Probability1 < 0.2 & Popular == 1)
+  
+  table(false_pos_train$Cluster)
+  
+  
+  train_cut_1 = train_tf_cut_op
+  test_cut_1 = test_tf_cut_op
+  
+  #verify if any of the columns has NA
+  #unlist(lapply(train_cut_1, function(x) any(is.na(x))))
+  
+  train_cut_1$Popular = as.factor(train_cut_op$Popular)
+  test_cut_1$Popular = as.factor(test_cut_op$Popular)
+  
+  train_cut_1$NewsDesk = train_cut_op$NewsDesk
+  test_cut_1$NewsDesk = test_cut_op$NewsDesk
+  train_cut_1$SectionName = train_cut_op$SectionName
+  test_cut_1$SectionName = test_cut_op$SectionName
+  train_cut_1$SubsectionName = train_cut_op$SubsectionName
+  test_cut_1$SubsectionName = test_cut_op$SubsectionName
+  
+  #keywords = c("Quandary", "Facts & Figures", "Daily Report",
+  #             "Daily Clip Report", "Vegeterian", "Word of the Day",
+  #             "Recap", "New York Today", "Big Ticket", "Readers Respond",
+  #             "Test Yourself", "Reading")
+  
+  #for (i in keywords) {
+  #  col = gsub(" ", "", i)
+  #  col = gsub("&", "", col)
+  #  train_cut_1[[col]] = grepl(i, train_cut$Headline, ignore.case = TRUE)
+  #  test_cut_1[[col]] = grepl(i, test_cut$Headline, ignore.case = TRUE)
+  #}
+  
+  #x = randomForest(Popular~ WordCount + Weekday + NewsDesk + SectionName +  SubsectionName + Hour +
+  #                   HeadlineLength + AbstractLength, 
+                   
+  #                       data = news_train_cl[[i]], method = "class", cp = best$bestTune[[1]]) 
+  #x = randomForest(Popular~ . - UniqueID - Headline - Snippet - Abstract, 
+  #x = rpart(Popular~ . - UniqueID - Headline - Snippet - Abstract - NewsDesk - SectionName - 
+  #                   HeadlineLength - AbstractLength - 
+  #                   SubsectionName - Weekday - Hour - WordCount, data = train_cut_1, method = "class")
+  #x = rpart(train_cut_1$Popular~ . + train_cut_1$HeadlineLength + train_cut_1$WordCount + train_cut_1$AbstractLength +
+  #            train_cut_1$Weekday + train_cut_1$Hour,
+  #x = rpart(Popular~ ., 
+  #          data = train_cut_1, cp = 0.001, method = "class")
+  #set.seed(2998)
+  #numFolds = trainControl(method = "cv", number = 10 )
+  #cpGrid = expand.grid(.nodesize = c(1, 3, 5, 7, 10, 15, 25, 35), .ntree = c(500, 1000, 2000, 3000), .mtry = 10) 
+  #cpGrid = expand.grid(.mtry = 10) 
 
-valid_cut_1 = cbind(valid_cut, subset(tf, row.names(tf) %in% valid_cut$UniqueID))
+  #best = train(Popular~ ., 
+  #             data = train_cut_1, method = "rf", 
+  #             trControl = numFolds, tuneGrid = cpGrid, nodesize = 5, ntree = 1000)
+  
+  y = x
+  x = randomForest(Popular~ ., 
+            data = train_cut_1, nodesize = 5, ntree = 1000)
+  #x = randomForest(train_cut_1$Popular~ .,
+  #          data = tf_train_op, nodesize = 5, ntree = 1000)
+  #prp(x)
+  #x = randomForest(Popular~ . - UniqueID - Headline - Snippet - Abstract - NewsDesk - SectionName - 
+  #                   SubsectionName - Weekday - Hour - WordCount, 
+  #                                data = train_cut_1, nodesize = 5, ntree = 1000) 
+  #                                data = train_cut_1, nodesize = 5, ntree = 1000) 
+  
+  
+  pred_test_by_secname  <- data.frame()
+  pred_train_by_secname  <- data.frame()
+  
+  p = predict(x, newdata = test_cut_1, type="prob")
+  
+  mdf = data.frame(UniqueID = test_cut_op$UniqueID, Probability1 = p[,2], Popular = test_cut_1$Popular)
+  # Add previously predicted data
+  #fdf = rbind(mdf, test_quick_pred)
+  fdf = mdf
+  fdf = fdf[order(fdf$UniqueID), ]
+  #print(access_accuracy(fdf$Popular,  fdf$Probability1 > 0.5, fdf$Probability1))
+  cat("Test AUC: ", auc(fdf$Popular, fdf$Probability1), "\n")
+  #print(table(fdf$Popular, fdf$Probability1 > 0.5))
+  pred_test_by_secname = rbind(pred_test_by_secname, fdf)
+  #pred_test_by_secname = rbind(pred_test_by_secname, test_quick_pred)
+  pred_test_by_secname = pred_test_by_secname[order(pred_test_by_secname$UniqueID),] 
+  
+  p_train = predict(x, type="prob")
+  
+  mdf_train = data.frame(UniqueID = train_cut_op$UniqueID, Probability1 = p_train[,2], Popular = train_cut_1$Popular)
+  # Add previously predicted data
+  #fdf_train = rbind(mdf_train, train_quick_pred)
+  fdf_train = mdf_train
+  fdf_train = fdf_train[order(fdf_train$UniqueID), ]
+  #print(access_accuracy(fdf_train$Popular,  fdf_train$Probability1 > 0.5, fdf_train$Probability1))
+  cat("Train AUC: ", auc(fdf_train$Popular, fdf_train$Probability1), "\n")
+  #print(table(fdf_train$Popular, fdf_train$Probability1 > 0.5))
+  pred_train_by_secname = rbind(pred_train_by_secname, fdf_train)
+
+#}
+
+
+# full prediction by search doesn't work well
+#search_pred(article_headline = train_cut_op$Headline, 
+#            article_body = train_cut_op$Abstract, 
+#            queries = paste(test_cut_op$Headline, test_cut_op$Abstract, sep = " "), 
+#            train_judgement = train_cut_op$Popular, 
+#            test_judgement = test_cut_op$Popular,
+#            other_model_pred = pred_test_by_secname$Probability1, 
+#            train = TRUE) 
+
+#partial will do
+#tr1 = subset(train, SectionName == "Opinion")
+#tst1 = subset(test, SectionName == "Opinion")
+
+#comb_pred = search_pred(article_headline = tr1$Headline, 
+#            article_body = tr1$Abstract, 
+#            queries = paste(tst1$Headline, tst1$Abstract, sep = " "), 
+#            train_judgement = tr1$Popular, 
+#            test_judgement = tst1$Popular,
+#            other_model_pred = subset(pred_test_by_secname$Probability1, test$SectionName == "Opinion"), 
+#            train = TRUE) 
+
+tr1 = subset(train, SectionName == "Opinion")
+tst1 = subset(test_cut_op, SectionName == "Opinion")
+
+comb_pred = search_pred(article_headline = tr1$Headline, 
+            article_body = tr1$Abstract, 
+            queries = paste(tst1$Headline, tst1$Abstract, sep = " "), 
+            train_judgement = tr1$Popular, 
+            test_judgement = tst1$Popular,
+            other_model_pred = subset(pred_test_by_secname$Probability1, test_cut_op$SectionName == "Opinion"), 
+            train = TRUE) 
+
+tr1 = train
+tst1 = test_cut_op
+
+comb_pred_all = search_pred(article_headline = tr1$Headline, 
+            article_body = tr1$Abstract, 
+            queries = paste(tst1$Headline, tst1$Abstract, sep = " "), 
+            train_judgement = tr1$Popular, 
+            test_judgement = tst1$Popular,
+            other_model_pred = pred_test_by_secname$Probability1, 
+            train = TRUE) 
+
+
+#tr1 = subset(train, NewsDesk== "Business" & SectionName == "Business Day")
+#tr1 = subset(train, NewsDesk== "Business")
+tr1 = subset(train, SectionName == "Business Day")
+#tr1 = train
+tst1 = subset(test_cut_op, NewsDesk== "Business" & SectionName == "Business Day")
+
+comb_pred_1 = search_pred(article_headline = tr1$Headline, 
+            article_body = tr1$Abstract, 
+            queries = paste(tst1$Headline, tst1$Abstract, sep = " "), 
+            train_judgement = tr1$Popular, 
+            test_judgement = tst1$Popular,
+            other_model_pred = subset(pred_test_by_secname$Probability1, 
+                                      test_cut_op$NewsDesk == "Business" &
+                                      test_cut_op$SectionName == "Business Day"), 
+            train = TRUE) 
+  
+final_pred = pred_test_by_secname 
+final_pred = rbind(final_pred, test_quick_pred)
+cat("Before combination AUC = ", auc(final_pred$Popular,final_pred$Probability1), '\n')
+
+final_pred$Probability1[which(test_cut_op$SectionName == "Opinion")] = comb_pred 
+final_pred =  final_pred[order(final_pred$UniqueID),] 
+cat("Final Combined AUC = ", auc(final_pred$Popular,final_pred$Probability1), '\n')
+#pred_train_by_secname = rbind(pred_train_by_secname, train_quick_pred)
+
+#cat("Overall Test AUC: ", auc(pred_test_by_secname$Popular, pred_test_by_secname$Probability1), "\n")
+#cat("Overall Train AUC: ", auc(pred_train_by_secname$Popular, pred_train_by_secname$Probability1), "\n")
+
+#################### do the same with a validation set
+
+#valid_cut_1 = cbind(valid_cut, subset(tf, row.names(tf) %in% valid_cut$UniqueID))
+valid_cut_1 = valid_cut
 p_valid = predict(x, newdata = valid_cut_1, type="prob")
 
 mdf_valid = data.frame(UniqueID = valid_cut_1$UniqueID, Probability1 = p_valid[,2])
+
+
+tr1 = subset(train, SectionName == "Opinion")
+tst1 = subset(valid_cut, SectionName == "Opinion")
+
+comb_pred = search_pred(article_headline = tr1$Headline, 
+            article_body = tr1$Abstract, 
+            queries = paste(tst1$Headline, tst1$Abstract, sep = " "), 
+            train_judgement = tr1$Popular, 
+            test_judgement = tst1$Popular,
+            other_model_pred = subset(mdf_valid$Probability1, valid_cut$SectionName == "Opinion"), 
+            train = FALSE) 
+
+
+
+
 fdf_valid = rbind(mdf_valid, valid_quick_pred)
 fdf_valid = fdf_valid[order(fdf_valid$UniqueID), ]
 MySubmission = data.frame(UniqueID = fdf_valid$UniqueID, Probability1 = fdf_valid$Probability1)
-write.csv(MySubmission, "Submission_Sergius_050215.csv", row.names=FALSE)
+write.csv(MySubmission, "Submission_Sergius_050315_1.csv", row.names=FALSE)
+
+
+######################################################
+
+#false_pos_train = subset(train_cut, mdf_train$Probability1 > 0.5 & Popular == 0)
+false_pos_test = subset(test_cut, mdf$Probability1 > 0.7 & Popular == 0)
+false_neg_test = subset(test_cut, mdf$Probability1 < 0.3 & Popular == 1)
+not_sure_test = subset(test_cut, mdf$Probability1 > 0.4 & mdf$Probability1 < 0.6)
+
+opinion_cut = subset(df_list$train, SectionName == "Opinion")
+opinion_cut = data.frame(pop = opinion_cut$Popular, head = opinion_cut$Headline, 
+                         abstract = opinion_cut$Abstract)
+
+train_cut_cl = train_cut
+train_cut_cl$Cluster = clusterTrain 
+false_pos_train = subset(train_cut_cl, mdf_train$Probability1 > 0.8 & Popular == 0)
+false_neg_train = subset(train_cut_cl, mdf_train$Probability1 < 0.2 & Popular == 1)
+
+table(false_pos_train$Cluster)
+#false_pos_test1 = subset(test_cut, mdf$Probability1 > 0.5 & Popular == 0)
+#false_neg_test1 = subset(test_cut, mdf$Probability1 < 0.5 & Popular == 1)
+
+
+table(train_cut_1$NewsDesk, train_cut_1$SectionName)
+table(test_cut_1$NewsDesk, test_cut_1$SectionName)
+
+table(df_list$train$NewsDesk, df_list$train$SectionName)
+table(valid$NewsDesk, valid$SectionName)
+#var = "NewsDesk"
+var = "SectionName"
+
+for(lev in levels(test_cut_1[[var]])) {
+  x = subset(test_cut_op, test_cut_1[[var]] == lev)  
+  y = subset(mdf, UniqueID %in% x$UniqueID)
+  cat("Category: ", lev, '\n')
+  #levs = sort(union(x$Popular))
+  actual = factor(x$Popular)
+  prob = y$Probability1
+  predicted = factor(as.numeric(prob > 0.5), c(0,1))
+  print(table(actual = actual, predicted = predicted))
+  print(access_accuracy(actual,  predicted, prob))
+  cat('\n')
+}
+
 
 # We will just create a simple logistic regression model, to predict Popular using WordCount:
 

@@ -1,5 +1,5 @@
 
-tf_frame <- function(text_vector, term_sparse_factor) {
+tf_frame <- function(text_vector, term_sparse_factor, method = "") {
     
   library(tm)
   library(SnowballC)
@@ -34,7 +34,20 @@ tf_frame <- function(text_vector, term_sparse_factor) {
   corpus = tm_map(corpus, stemDocument)
   
   # Create matrix
-  frequencies = DocumentTermMatrix(corpus)
+  #frequencies = DocumentTermMatrix(corpus)
+  if (method == "") {
+    frequencies = DocumentTermMatrix(corpus) 
+  } else if (method == "tfnormidf") {
+    frequencies = DocumentTermMatrix(corpus, 
+                                     control = list(weighting =
+                                                    function(x)
+                                                    weightTfIdf(x, normalize = TRUE)))
+  } else if (method == "tfidf") {
+    frequencies = DocumentTermMatrix(corpus, 
+                                     control = list(weighting =
+                                                    function(x)
+                                                    weightSMART(x, spec = "ntn")))
+  }
   
   # Look at matrix 
   #inspect(frequencies[1000:1005,505:515])
@@ -45,7 +58,12 @@ tf_frame <- function(text_vector, term_sparse_factor) {
   # Remove sparse terms
   # Keep only those terms that exist in 0.5% of the tweets
   #sparse = removeSparseTerms(frequencies, 0.995)
-  sparse = removeSparseTerms(frequencies, term_sparse_factor)
+  if (term_sparse_factor < 1) {
+    sparse = removeSparseTerms(frequencies, term_sparse_factor)
+  }
+  else {
+    sparse = frequencies
+  }
   #sparse
   
   # Convert to a data frame
